@@ -592,6 +592,170 @@ status:
 	}
 }
 
+func TestEndpointsWatcherInvalidPortsInSubset(t *testing.T) {
+	for _, tt := range []struct {
+		serviceType                      string
+		k8sConfigs                       []string
+		id                               ServiceID
+		hostname                         string
+		port                             Port
+		expectedAddresses                []string
+		expectedNoEndpoints              bool
+		expectedNoEndpointsServiceExists bool
+		expectedError                    bool
+	}{
+		{
+			serviceType: "local services",
+			k8sConfigs: []string{`
+apiVersion: v1
+kind: Service
+metadata:
+  name: name1
+  namespace: ns
+spec:
+  type: LoadBalancer
+  ports:
+  - name: svc-port
+    port: 8989
+    targetPort: svc-port
+  - name: http-port
+    port: 9999
+    targetPort: http-port`,
+				`
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: name1
+  namespace: ns
+subsets:
+- addresses:
+  - ip: 172.17.0.12
+    targetRef:
+      kind: Pod
+      name: name1-1
+      namespace: ns
+  - ip: 172.17.0.19
+    targetRef:
+      kind: Pod
+      name: name1-2
+      namespace: ns
+  - ip: 172.17.0.20
+    targetRef:
+      kind: Pod
+      name: name1-3
+      namespace: ns
+  - ip: 172.17.0.21
+  ports:
+  - name: http-port
+    port: 9999
+    protocol: TCP
+- addresses:
+  - ip: 172.17.0.12
+    targetRef:
+      kind: Pod
+      name: name1-1
+      namespace: ns
+  - ip: 172.17.0.19
+    targetRef:
+      kind: Pod
+      name: name1-2
+      namespace: ns
+  - ip: 172.17.0.20
+    targetRef:
+      kind: Pod
+      name: name1-3
+      namespace: ns
+  - ip: 172.17.0.21
+  ports:
+  - name: svc-port
+    port: 8989
+    protocol: TCP`,
+				`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: name1-1
+  namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
+status:
+  phase: Running
+  podIP: 172.17.0.12`,
+				`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: name1-2
+  namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
+status:
+  phase: Running
+  podIP: 172.17.0.19`,
+				`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: name1-3
+  namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
+status:
+  phase: Running
+  podIP: 172.17.0.20`,
+			},
+			id:   ServiceID{Name: "name1", Namespace: "ns"},
+			port: 8989,
+			expectedAddresses: []string{
+				"172.17.0.12:8989",
+				"172.17.0.19:8989",
+				"172.17.0.20:8989",
+				"172.17.0.21:8989",
+			},
+			expectedNoEndpoints:              false,
+			expectedNoEndpointsServiceExists: false,
+			expectedError:                    false,
+		},
+	} {
+		tt := tt // pin
+		t.Run("subscribes listener to "+tt.serviceType, func(t *testing.T) {
+			k8sAPI, err := k8s.NewFakeAPI(tt.k8sConfigs...)
+			if err != nil {
+				t.Fatalf("NewFakeAPI returned an error: %s", err)
+			}
+
+			watcher := NewEndpointsWatcher(k8sAPI, logging.WithField("test", t.Name()), false)
+
+			k8sAPI.Sync(nil)
+
+			listener := newBufferingEndpointListener()
+
+			err = watcher.Subscribe(tt.id, tt.port, tt.hostname, listener)
+			if tt.expectedError && err == nil {
+				t.Fatal("Expected error but was ok")
+			}
+			if !tt.expectedError && err != nil {
+				t.Fatalf("Expected no error, got [%s]", err)
+			}
+
+			listener.ExpectAdded(tt.expectedAddresses, t)
+
+			if listener.endpointsAreNotCalled() != tt.expectedNoEndpoints {
+				t.Fatalf("Expected noEndpointsCalled to be [%t], got [%t]",
+					tt.expectedNoEndpoints, listener.endpointsAreNotCalled())
+			}
+
+			if listener.endpointsDoNotExist() != tt.expectedNoEndpointsServiceExists {
+				t.Fatalf("Expected noEndpointsExist to be [%t], got [%t]",
+					tt.expectedNoEndpointsServiceExists, listener.endpointsDoNotExist())
+			}
+		})
+	}
+}
+
 func TestEndpointsWatcherWithEndpointSlices(t *testing.T) {
 	for _, tt := range []struct {
 		serviceType                      string
